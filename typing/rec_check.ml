@@ -21,101 +21,104 @@ exception Illegal_expr
 module Env' = Env
 module Rec_context =
 struct
-  type access =
+  type mode =
       Dereferenced
     (** [Dereferenced] indicates that the value (not just the address) of a
-        variable is accessed *)
+        variable is accessed, or that an expression needs to be evaluated
+        and accessed. *)
 
     | Guarded
     (** [Guarded] indicates that the address of a variable is used in a
-        guarded context, i.e. under a constructor.  A variable that is
-        dereferenced within a function body or lazy context is also considered
-        guarded. *)
+        guarded context, i.e. under a constructor, or stored in a closure.
+        An expression is [Guarded] the address of its value is used in a
+        guarded context.*)
+
+    | Delayed
+    (** [Delayed] indicates that an expression has its evaluation delayed,
+        i.e it is placed in a function or it is lazily evaluated.  A variable
+        is delayed it is is placed in such an expression. *)
+
+    | Unused
+    (** [Unused] indicates that a variable is not used in an expression. *)
 
     | Unguarded
     (** [Unguarded] indicates that the address of a variable is used in an
         unguarded context, i.e. not under a constructor. *)
 
-  (** [guard] represents guarded contexts such as [C -] and [{l = -}] *)
-  let guard : access -> access = function
-    | Dereferenced -> Dereferenced
-    | Guarded -> Guarded
-    | Unguarded -> Guarded
+  (* Returns the most conservative mode of the two arguments. *)
+  let prec m m' =
+    match m, m' with
+    | Dereferenced, _
+    | _, Dereferenced -> Dereferenced
+    | Unguarded, _
+    | _, Unguarded -> Unguarded
+    | Guarded, _
+    | _, Guarded -> Guarded
+    | Delayed, _
+    | _, Delayed -> Delayed
+    | _ -> Unused
 
-  (** [inspect] represents elimination contexts such as [match - with cases],
-      [e -] and [- e] *)
-  let inspect : access -> access = function
-    | Dereferenced -> Dereferenced
-    | Guarded -> Dereferenced
-    | Unguarded -> Dereferenced
+  (* Suppose that a variable x is used with the mode m' in an expression
+     that is used with mode m in a more global context.
+     (compos m m') is the mode of x in this global context. *)
+  let compos m m' = match m, m' with
+    | Unused, _
+    | _, Unused -> failwith "Not defined."
+    | Dereferenced, _ -> Dereferenced
+    | Delayed, _ -> Delayed
+    | Guarded, m
+    | Unguarded, m -> m
 
-  (** [delay] represents contexts that delay evaluation such as [fun p -> -]
-      or [lazy -] *)
-  let delay : access -> access = function
-    | Dereferenced -> Guarded
-    | Guarded -> Guarded
-    | Unguarded -> Guarded
+  (** let_in m_loc m_glob:
+      in the expression let x = e in e', if x is used in mode m_loc in e 'and
+      e' is used m_glob, let_in m_loc m_glob returns the mode in which e must
+      be evaluated. *)
+  let let_in m_loc m_glob =
+    compos m_glob (prec m_loc Guarded)
 
-  module Use :
+  module Env :
   sig
     type t
-    val guard : t -> t
-    (** An expression appears in a guarded context *)
 
-    val discard : t -> t
-    (** The address of a subexpression is not used, but may be bound *)
-
-    val inspect : t -> t
-    (** The value of a subexpression is inspected with match, application,
-        etc. *)
-
-    val delay : t -> t
-    (** An expression appears under 'fun p ->' or 'lazy' *)
-
-    val join : t -> t -> t
-    (** Combine the access information of two expressions *)
-
-    val single : Ident.t -> access -> t
-    (** Combine the access information of two expressions *)
+    val single : Ident.t -> mode -> t
+    (** Create an environment with a single identifier used with a given mode.
+    *)
 
     val empty : t
-    (** No variables are accessed in an expression; it might be a
-        constant or a global identifier *)
+    (** An environment with no used identifiers. *)
+
+    val find : t -> Ident.t -> mode
+    (** Find the mode of an indentifier in an environment.  The default mode is
+        Unused. *)
 
     val unguarded : t -> Ident.t list
     (** The list of identifiers that are used in an unguarded context *)
 
     val dependent : t -> Ident.t list
     (** The list of all used identifiers *)
+
+    val join : t -> t -> t
+
+    val remove_list : Ident.t list -> t -> t
+    (* Remove all the variables of a list from an environment. *)
   end =
   struct
     module M = Map.Make(Ident)
 
     (** A "t" maps each rec-bound variable to an access status *)
-    type t = access M.t
+    type t = mode M.t
 
-    let map f tbl = M.map f tbl
-    let guard t = map guard t
-    let inspect t = map inspect t
-    let delay t = map delay t
-    let discard = guard
+    let find (tbl: t) (id: Ident.t) =
+      try M.find id tbl with Not_found -> Unused
 
-    let prec x y =
-      match x, y with
-      | Dereferenced, _
-      | _, Dereferenced -> Dereferenced
-      | Unguarded, _
-      | _, Unguarded -> Unguarded
-      | _ -> Guarded
-
-    let join x y =
+    let join (x: t) (y: t) =
       M.fold
-        (fun id v tbl ->
-           let v' = try M.find id tbl with Not_found -> Guarded in
+        (fun (id: Ident.t) (v: mode) (tbl: t) ->
+           let v' = find tbl id in
            M.add id (prec v v') tbl)
         x y
 
-    let single id access = M.add id access M.empty
+    let single id mode = M.add id mode M.empty
 
     let empty = M.empty
 
@@ -129,25 +132,6 @@ struct
 
     let dependent =
       list_matching (function _ -> true)
-  end
-
-  module Env =
-  struct
-    (* A typing environment maps identifiers to types *)
-    type env = Use.t Ident.tbl
-
-    let empty = Ident.empty
-
-    let join x y =
-      let r =
-      Ident.fold_all
-        (fun id v tbl ->
-           let v' = try Ident.find_same id tbl with Not_found -> Use.empty in
-           Ident.add id (Use.join v v') tbl)
-        x
-        y
-      in
-      r
   end
 end
 
