@@ -132,16 +132,13 @@ struct
 
     let dependent =
       list_matching (function _ -> true)
+
+    let remove_list l env =
+      List.fold_left (fun e x -> M.remove x e) env l
   end
 end
 
 open Rec_context
-
-let build_unguarded_env : Ident.t list -> Env.env = fun idlist ->
-  List.fold_left
-    (fun env id -> Ident.add id (Use.single id Unguarded) env)
-    Env.empty
-    idlist
 
 let is_ref : Types.value_description -> bool = function
   | { Types.val_kind =
@@ -199,8 +196,10 @@ let array_type_kind env ty =
 
 let array_kind exp = array_type_kind exp.exp_env exp.exp_type
 
+(*
 let has_concrete_element_type : Typedtree.expression -> bool =
   fun e -> array_kind e <> `Pgenarray
+  *)
 
 (* See the note on abstracted arguments in the documentation for
     Typedtree.Texp_apply *)
@@ -343,25 +342,42 @@ let classify_expression : Typedtree.expression -> sd =
         Dynamic
   in classify_expression Ident.empty
 
-let rec expression : Env.env -> Typedtree.expression -> Use.t =
-  fun env exp -> match exp.exp_desc with
+type pattern_info =
+  | NonDestructuring of Ident.t option
+  | Destructuring
+
+let rec expression : mode -> Typedtree.expression -> Env.t =
+  fun mode exp -> match exp.exp_desc with
     | Texp_ident (pth, _, _) ->
-        (path env pth)
+        (path mode pth)
     | Texp_let (rec_flag, bindings, body) ->
-      let env', ty = value_bindings rec_flag env bindings in
-      (* Here and in other binding constructs 'discard' is used in a
-          similar way to the way it's used in sequence: uses are
-          propagated, but unguarded access are not. *)
-      Use.join (Use.discard ty) (expression (Env.join env env') body)
+      let env0 = expression mode body in
+      let vars = List.fold_left (fun v b -> (pat_bound_idents b.vb_pat) @ v)
+                                []
+                                bindings
+      in
+      let env1 = Env.remove_list vars env0 in
+      let env2 = list (value_binding env0 vars) mode bindings in
+      Env.join env1 env2
+(*
     | Texp_letmodule (x, _, m, e) ->
       let ty = modexp env m in
       Use.join (Use.discard ty) (expression (Ident.add x ty env) e)
+*)
     | Texp_match (e, val_cases, exn_cases, _) ->
-      let t = expression env e in
-      let exn_case env {Typedtree.c_rhs} = expression env c_rhs in
-      let cs = list (case ~scrutinee:t) env val_cases
-      and es = list exn_case env exn_cases in
-      Use.(join cs es)
+      let env_pat, m_e =
+        List.fold_left
+          (fun (env, m) c ->
+            let (env', m') = case mode c in
+            (Env.join env env'), (prec m m'))
+          (Env.empty, Unused)
+          val_cases
+      in
+      (* TODO: take exception cases into account.
+       * let exn_case env {Typedtree.c_rhs} = expression env c_rhs in *)
+      let env_e = expression m_e e in
+      Env.join env_pat env_e
+(*
     | Texp_for (_, _, e1, e2, _, e3) ->
       Use.(join
               (join
@@ -370,9 +386,10 @@ let rec expression : Env.env -> Typedtree.expression -> Use.t =
               (* The body is evaluated, but not used, and not available
                   for inclusion in another value *)
               (discard (expression env e3)))
-
+*)
     | Texp_constant _ ->
-      Use.empty
+      Env.empty
+(*
     | Texp_new (pth, _, _) ->
         Use.inspect (path env pth)
     | Texp_instvar _ ->
@@ -380,16 +397,21 @@ let rec expression : Env.env -> Typedtree.expression -> Use.t =
     | Texp_apply ({exp_desc = Texp_ident (_, _, vd)}, [_, Some arg])
       when is_ref vd ->
         Use.guard (expression env arg)
+*)
     | Texp_apply (e, args)  ->
-        let arg env (_, eo) = option expression env eo in
-        let ty = Use.join (list arg env args) (expression env e) in
-        if List.exists is_abstracted_arg args
+        let arg m (_, eo) = option expression m eo in
+        let m' = if List.exists is_abstracted_arg args
         then (* evaluate expressions, abstract over the results
                 let g = f and x = e in fun z -> g ~x z *)
-          Use.discard ty
-        else Use.inspect ty
+          failwith "TODO"
+          (* original code: Use.discard ty
+             Should it be replaced by Delayed? *)
+        else compos mode Dereferenced
+        in
+        Env.join (list arg m' args) (expression m' e)
     | Texp_tuple exprs ->
-      Use.guard (list expression env exprs)
+      list expression (compos mode Guarded) exprs
+(*
     | Texp_array exprs when array_kind exp = `Pfloatarray ->
       Use.inspect (list expression env exprs)
     | Texp_array exprs when has_concrete_element_type exp ->
@@ -398,17 +420,23 @@ let rec expression : Env.env -> Typedtree.expression -> Use.t =
       (* This is counted as a use, because constructing a generic array
           involves inspecting the elements (PR#6939). *)
       Use.inspect (list expression env exprs)
+*)
     | Texp_construct (_, desc, exprs) ->
       let access_constructor =
         match desc.cstr_tag with
-        | Cstr_extension (pth, _) -> Use.inspect (path env pth)
-        | _ -> Use.empty
+        | Cstr_extension (pth, _) -> failwith "TODO"
+          (* Use.inspect (path env pth) *)
+        | _ -> Env.empty
       in
-      let use = match desc.cstr_tag with
-        | Cstr_unboxed -> (fun x -> x)
-        | Cstr_constant _ | Cstr_block _ | Cstr_extension _ -> Use.guard
+      let m' = match desc.cstr_tag with
+        | Cstr_unboxed -> failwith "TODO"
+          (* Original code: (fun x -> x)
+             I guess it should be replaced by `mode`. *)
+        | Cstr_constant _ | Cstr_block _ | Cstr_extension _ ->
+          compos mode Guarded
       in
-      Use.join access_constructor (use (list expression env exprs))
+      Env.join access_constructor (list expression m' exprs)
+(*
     | Texp_variant (_, eo) ->
       Use.guard (option expression env eo)
     | Texp_record { fields = es; extended_expression = eo;
@@ -463,8 +491,20 @@ let rec expression : Env.env -> Typedtree.expression -> Use.t =
     | Texp_override (_, fields) ->
       let field env (_, _, e) = expression env e in
       Use.inspect (list field env fields)
+*)
     | Texp_function { cases } ->
-      Use.delay (list (case ~scrutinee:Use.empty) env cases)
+      (* Approximation: function `p1 -> e1, ..., pn -> en` is the same as
+         `fun x -> match x with p1 -> e1, ..., pn -> en`.
+
+         The typing of this expression is nearly the same as the typing of
+         a `match` expression, the differences are:
+         - e1, ..., en are evaluated in the m[Delayed] mode instead of m
+         - we don't care about the mode returned by the `case` function.
+         - there are no exception cases. *)
+      let m = compos mode Delayed in
+      list (fun m c -> fst (case m c)) m cases
+
+(*
     | Texp_lazy e ->
         begin match Typeopt.classify_lazy_argument e with
         | `Constant_or_function
@@ -478,11 +518,24 @@ let rec expression : Env.env -> Typedtree.expression -> Use.t =
       Use.empty
     | Texp_extension_constructor _ ->
       Use.empty
-and option : 'a. (Env.env -> 'a -> Use.t) -> Env.env -> 'a option -> Use.t =
-  fun f env -> Misc.Stdlib.Option.value_default (f env) ~default:Use.empty
-and list : 'a. (Env.env -> 'a -> Use.t) -> Env.env -> 'a list -> Use.t =
-  fun f env ->
-    List.fold_left (fun typ item -> Use.join (f env item) typ) Use.empty
+      *)
+    | _ -> failwith "TODO" 
+
+(* option f m o:
+   If o is Some(x), returns f m x.
+   If o is None, returns Env.empty *)
+and option : 'a. (mode -> 'a -> Env.t) -> mode -> 'a option -> Env.t =
+  fun f m -> Misc.Stdlib.Option.value_default (f m) ~default:Env.empty
+
+(* list f m l:
+   Compute the environments e_i = f l_i m, with l_i an element
+   of the list l.
+   Join the environments e_i and return the result.
+*)
+and list : 'a. (mode -> 'a -> Env.t) -> mode -> 'a list -> Env.t =
+  fun f m ->
+    List.fold_left (fun env item -> Env.join (f m item) env) Env.empty
+(*
 and array : 'a. (Env.env -> 'a -> Use.t) -> Env.env -> 'a array -> Use.t =
   fun f env ->
     Array.fold_left (fun typ item -> Use.join (f env item) typ) Use.empty
@@ -526,14 +579,19 @@ and modexp : Env.env -> Typedtree.module_expr -> Use.t =
       Use.inspect (modexp env m)
     | Tmod_unpack (e, _) ->
         expression env e
-and path : Env.env -> Path.t -> Use.t =
-  fun env pth -> match pth with
+*)
+and path : mode -> Path.t -> Env.t =
+  fun mode pth -> match pth with
     | Path.Pident x ->
-        (try Ident.find_same x env with Not_found -> Use.empty)
+        Env.single x mode
+    |_ -> failwith "TODO"
+        (*
     | Path.Pdot (t, _, _) ->
         Use.inspect (path env t)
     | Path.Papply (f, p) ->
         Use.(inspect (join (path env f) (path env p)))
+        *)
+(*
 and structure : Env.env -> Typedtree.structure -> Use.t =
   fun env s ->
     let _, ty =
@@ -605,22 +663,19 @@ and class_expr : Env.env -> Typedtree.class_expr -> Use.t =
         class_expr env ce
     | Tcl_open (_, _, _, _, ce) ->
         class_expr env ce
-and case : Env.env -> Typedtree.case -> scrutinee:Use.t -> Use.t =
-  fun env { Typedtree.c_lhs; c_guard; c_rhs } ~scrutinee:ty ->
-    let ty =
-      if is_destructuring_pattern c_lhs then Use.inspect ty
-      else Use.discard ty (* as in 'let' *)
+*)
+and case : mode -> Typedtree.case (* -> scrutinee:Use.t *) -> Env.t * mode =
+  fun m { Typedtree.c_lhs; c_guard; c_rhs } (* ~scrutinee:ty *) ->
+    (* TODO: take c_guard into account *)
+    let env = expression m c_rhs in
+    let m' = match is_destructuring_pattern c_lhs with
+      | NonDestructuring(None) -> let_in Unused m
+      | NonDestructuring(Some id) -> let_in (Env.find env id) m
+      | Destructuring -> compos m Dereferenced
     in
     let vars = pat_bound_idents c_lhs in
-    let env =
-      List.fold_left
-        (fun env id -> Ident.add id ty env)
-        env
-        vars
-    in
-    Use.(join ty
-            (join (expression env c_rhs)
-                (inspect (option expression env c_guard))))
+    (Env.remove_list vars env), m'
+(*
 and value_bindings :
   rec_flag -> Env.env -> Typedtree.value_binding list -> Env.env * Use.t =
   fun rec_flag env bindings ->
@@ -656,35 +711,46 @@ and value_bindings :
               (Env.join env2 env', Use.join ty ty'))
           (Env.empty, Use.empty)
           bindings
-and value_binding : Env.env -> Typedtree.value_binding -> Env.env * Use.t =
-  (* NB: returns new environment only *)
-  fun env { vb_pat; vb_expr } ->
-    let vars = pat_bound_idents vb_pat in
-    let ty = expression env vb_expr in
-    let ty = if is_destructuring_pattern vb_pat then Use.inspect ty else ty in
-    (List.fold_left
-      (fun env id -> Ident.add id ty env)
-      Env.empty
-      vars,
-      ty)
-and is_destructuring_pattern : Typedtree.pattern -> bool =
-  fun pat -> match pat.pat_desc with
-    | Tpat_any -> false
-    | Tpat_var (_, _) -> false
-    | Tpat_alias (pat, _, _) -> is_destructuring_pattern pat
-    | Tpat_constant _ -> true
-    | Tpat_tuple _ -> true
-    | Tpat_construct (_, _, _) -> true
-    | Tpat_variant _ -> true
-    | Tpat_record (_, _) -> true
-    | Tpat_array _ -> true
-    | Tpat_or (l,r,_) ->
-        is_destructuring_pattern l || is_destructuring_pattern r
-    | Tpat_lazy _ -> true
+*)
+(* value_bindig env vars m bind:
+   Get the environment in which this binding must be evaluated.
 
-let is_valid_recursive_expression idlist expr =
-  let ty = expression (build_unguarded_env idlist) expr in
-  match Use.unguarded ty, Use.dependent ty, classify_expression expr with
+   The pattern and the parameter `env` are used to determine the mode in
+   which the expression must be evaluated.
+
+   `vars` is a list of indentifiers that must be removed from the resulting
+   environment. *)
+and value_binding : Env.t -> Ident.t list -> mode -> Typedtree.value_binding
+                          -> Env.t =
+  fun env vars m { vb_pat; vb_expr } ->
+    let m' = match is_destructuring_pattern vb_pat with
+      | NonDestructuring(None) -> let_in Unused m
+      | NonDestructuring(Some id) -> let_in (Env.find env id) m
+      | Destructuring -> compos m Dereferenced
+    in
+    let env' = expression m' vb_expr in
+    Env.remove_list vars env'
+
+and is_destructuring_pattern : Typedtree.pattern -> pattern_info =
+  fun pat -> match pat.pat_desc with
+    | Tpat_any -> NonDestructuring(None)
+    | Tpat_var (id, _) -> NonDestructuring(Some id)
+    | Tpat_alias (pat, _, _) -> failwith "TODO"
+      (* is_destructuring_pattern pat *)
+    | Tpat_constant _ -> Destructuring
+    | Tpat_tuple _ -> Destructuring
+    | Tpat_construct (_, _, _) -> Destructuring
+    | Tpat_variant _ -> Destructuring
+    | Tpat_record (_, _) -> Destructuring
+    | Tpat_array _ -> Destructuring
+    | Tpat_or (l,r,_) ->
+        failwith "TODO"
+        (* is_destructuring_pattern l || is_destructuring_pattern r *)
+    | Tpat_lazy _ -> Destructuring
+
+let is_valid_recursive_expression (*idlist*) _ expr =
+  let ty = expression Unguarded expr in
+  match Env.unguarded ty, Env.dependent ty, classify_expression expr with
   | _ :: _, _, _ (* The expression inspects rec-bound variables *)
   | _, _ :: _, Dynamic -> (* The expression depends on rec-bound variables
                               and its size is unknown *)
@@ -694,8 +760,8 @@ let is_valid_recursive_expression idlist expr =
                           but does not depend on rec-bound variables *)
       true
 
-let is_valid_class_expr idlist ce =
-  let rec class_expr : Env.env -> Typedtree.class_expr -> Use.t =
+let is_valid_class_expr idlist ce = true
+  (* let rec class_expr : Env.env -> Typedtree.class_expr -> Use.t =
     fun env ce -> match ce.cl_desc with
       | Tcl_ident (_, _, _) -> Use.empty
       | Tcl_structure _ -> Use.empty
@@ -711,4 +777,4 @@ let is_valid_class_expr idlist ce =
   in
   match Use.unguarded (class_expr (build_unguarded_env idlist) ce) with
   | [] -> true
-  | _ :: _ -> false
+  | _ :: _ -> false *)
