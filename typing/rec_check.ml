@@ -16,6 +16,8 @@ open Asttypes
 open Typedtree
 open Types
 
+[@@@warning "+4"]
+
 exception Illegal_expr
 
 module Env' = Env
@@ -342,6 +344,7 @@ let classify_expression : Typedtree.expression -> sd =
         Dynamic
   in classify_expression Ident.empty
 
+(* TODO: it's ugly *)
 type pattern_info =
   | NonDestructuring of Ident.t option
   | Destructuring
@@ -350,7 +353,8 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
   fun mode exp -> match exp.exp_desc with
     | Texp_ident (pth, _, _) ->
         (path mode pth)
-    | Texp_let (rec_flag, bindings, body) ->
+    | Texp_let (_rec_flag, bindings, body) ->
+      (* *)
       let env0 = expression mode body in
       let vars = List.fold_left (fun v b -> (pat_bound_idents b.vb_pat) @ v)
                                 []
@@ -365,6 +369,7 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
       Use.join (Use.discard ty) (expression (Ident.add x ty env) e)
 *)
     | Texp_match (e, val_cases, exn_cases, _) ->
+      (* TODO: split this fold *)
       let env_pat, m_e =
         List.fold_left
           (fun (env, m) c ->
