@@ -68,8 +68,8 @@ struct
     | _, Unused -> failwith "Not defined."
     | Dereferenced, _ -> Dereferenced
     | Delayed, _ -> Delayed
-    | Guarded, m
-    | Unguarded, m -> m
+    | m, Unguarded -> m
+    | Guarded, m' -> m'
 
   (** let_in m_loc m_glob:
       in the expression let x = e in e', if x is used in mode m_loc in e 'and
