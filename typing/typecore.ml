@@ -1762,12 +1762,14 @@ and is_nonexpansive_opt = function
     None -> true
   | Some e -> is_nonexpansive e
 
+exception CustomError of Typedtree.expression
+
 let check_recursive_bindings env valbinds =
   let ids = let_bound_idents valbinds in
   List.iter
     (fun {vb_expr} ->
        if not (Rec_check.is_valid_recursive_expression ids vb_expr) then
-         raise(Error(vb_expr.exp_loc, env, Illegal_letrec_expr))
+         raise (CustomError vb_expr)
     )
     valbinds
 
