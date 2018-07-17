@@ -201,12 +201,16 @@ and module_type_constraint =
 
 and module_expr_desc =
     Tmod_ident of Path.t * Longident.t loc
+    (** A *)
   | Tmod_structure of structure
+    (** struct ... end *)
   | Tmod_functor of Ident.t * string loc * module_type option * module_expr
   | Tmod_apply of module_expr * module_expr * module_coercion
+    (** A(B) *)
   | Tmod_constraint of
       module_expr * Types.module_type * module_type_constraint * module_coercion
   | Tmod_unpack of expression * Types.module_type
+    (** val m *)
 
 and structure = {
   str_items : structure_item list;
