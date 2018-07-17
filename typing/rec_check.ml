@@ -102,8 +102,11 @@ struct
 
     val join : t -> t -> t
 
+    val remove : Ident.t -> t -> t
+    (* Remove an indentifier from an environment. *)
+
     val remove_list : Ident.t list -> t -> t
-    (* Remove all the variables of a list from an environment. *)
+    (* Remove all the identifiers of a list from an environment. *)
   end =
   struct
     module M = Map.Make(Ident)
@@ -135,6 +138,8 @@ struct
 
     let dependent =
       list_matching (function _ -> true)
+
+    let remove = M.remove
 
     let remove_list l env =
       List.fold_left (fun e x -> M.remove x e) env l
