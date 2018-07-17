@@ -15,8 +15,11 @@
 
 type t =
     Pident of Ident.t
+    (** x *)
   | Pdot of t * string * int
+    (** A.x *)
   | Papply of t * t
+    (** A(B) *)
 
 let nopos = -1
 
