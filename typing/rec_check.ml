@@ -69,6 +69,7 @@ struct
     | Dereferenced, _ -> Dereferenced
     | Delayed, _ -> Delayed
     | m, Unguarded -> m
+    | Unguarded, m'
     | Guarded, m' -> m'
 
   (** let_in m_loc m_glob:
