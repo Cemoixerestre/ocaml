@@ -413,10 +413,13 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
       Env.join (Env.join env_1 env_2) env_3
     | Texp_constant _ ->
       Env.empty
-    | Texp_new (pth, _, _) -> failwith "TODO new"
-(*
-        Use.inspect (path env pth)
-*)
+    | Texp_new (pth, _, _) ->
+      (*
+        G |- c: m[Dereferenced]
+        -----------------------
+        G |- new c: m
+      *)
+      path (compos mode Dereferenced) pth
     | Texp_instvar _ -> failwith "TODO instvar"
         (*
       Use.empty
@@ -919,20 +922,15 @@ let is_valid_class_expr idlist ce =
       | Tcl_apply (_, _) -> Env.empty
       | Tcl_let (rec_flag, valbinds, _, ce) ->
         (*
-          G1, {x: _, x in V} |- e1: m[Guarded]
-          ...
-          Gn, {x: _, x in V} |- en: m[Guarded]
-          G |- C: m
-          ---
-          G1 + ... Gn + G |- let (rec)? p1 = e1 and ... pn = en in C: m
         *)
+        let env0 = class_expr mode ce in
         let vars = List.fold_left (fun v b -> (pat_bound_idents b.vb_pat) @ v)
                                   []
                                   valbinds
         in
-        let env0 = list (value_binding Env.empty vars) mode valbinds in
-        let env1 = class_expr mode ce in
-        Env.join env0 env1
+        let env1 = Env.remove_list vars env0 in
+        let env2 = list (value_binding env0 vars) mode valbinds in
+        Env.join env1 env2
       | Tcl_constraint (ce, _, _, _, _) ->
           class_expr mode ce
       | Tcl_open (_, _, _, _, ce) ->
