@@ -258,17 +258,24 @@ and class_expr =
 
 and class_expr_desc =
     Tcl_ident of Path.t * Longident.t loc * core_type list
+    (** x *)
   | Tcl_structure of class_structure
+    (** object [(P: T)] ... end *)
   | Tcl_fun of
       arg_label * pattern * (Ident.t * expression) list
       * class_expr * partial
+    (** fun x1 ... xn -> C *)
   | Tcl_apply of class_expr * (arg_label * expression option) list
+    (** C x *)
   | Tcl_let of rec_flag * value_binding list *
                   (Ident.t * expression) list * class_expr
+    (** let [rec] P1 = E1 and ... Pn = En in C *)
   | Tcl_constraint of
       class_expr * class_type option * string list * string list * Concr.t
-  (* Visible instance variables, methods and concrete methods *)
+    (** (C: T) *)
+    (* Visible instance variables, methods and concrete methods *)
   | Tcl_open of override_flag * Path.t * Longident.t loc * Env.t * class_expr
+    (** let open M in C *)
 
 and class_structure =
   {
