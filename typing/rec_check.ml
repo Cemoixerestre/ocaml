@@ -886,11 +886,7 @@ let is_valid_recursive_expression idlist expr =
   let ty = expression Unguarded expr in
   match Env.unguarded ty idlist, Env.dependent ty idlist,
         classify_expression expr with
-  | (_ :: _) as unguarded, _, _ ->
-      Printf.fprintf stderr
-      "ERROR: some rec-bound variables are unguarded: %s\n"
-      (String.concat ", " (List.map Ident.name unguarded));
-      false
+  | _ :: _, _, _ (* The expression inspects rec-bound variables *)
   | _, _ :: _, Dynamic -> (* The expression depends on rec-bound variables
                               and its size is unknown *)
       false
