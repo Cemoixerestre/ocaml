@@ -94,11 +94,12 @@ struct
     (** Find the mode of an indentifier in an environment.  The default mode is
         Unused. *)
 
-    val unguarded : t -> Ident.t list
-    (** The list of identifiers that are used in an unguarded context *)
+    val unguarded : t -> Ident.t list -> Ident.t list
+    (** unguarded e l: the list of all identifiers in e that are unguarded of
+        dereferenced in the environment e. *)
 
-    val dependent : t -> Ident.t list
-    (** The list of all used identifiers *)
+    val dependent : t -> Ident.t list -> Ident.t list
+    (** unguarded e l: the list of all identifiers in e that are used in e. *)
 
     val join : t -> t -> t
 
@@ -128,16 +129,18 @@ struct
 
     let empty = M.empty
 
+    (*
     let list_matching p t =
       let r = ref [] in
       M.iter (fun id v -> if p v then r := id :: !r) t;
       !r
+    *)
 
-    let unguarded =
-      list_matching (function Unguarded | Dereferenced -> true | _ -> false)
+    let unguarded x =
+      List.filter (fun id -> find x id = Dereferenced || find x id = Unguarded)
 
-    let dependent =
-      list_matching (function _ -> true)
+    let dependent x =
+      List.filter (fun id -> find x id <> Unused)
 
     let remove = M.remove
 
@@ -413,12 +416,19 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
     | Texp_new (pth, _, _) -> failwith "TODO new"
 (*
         Use.inspect (path env pth)
-    | Texp_instvar _ ->
+*)
+    | Texp_instvar _ -> failwith "TODO instvar"
+        (*
       Use.empty
+*)
     | Texp_apply ({exp_desc = Texp_ident (_, _, vd)}, [_, Some arg])
       when is_ref vd ->
-        Use.guard (expression env arg)
-*)
+      (*
+        G |- e: m[Guarded]
+        ------------------
+        G |- ref e: m
+      *)
+      expression (compos mode Guarded) arg
     | Texp_apply (e, args)  ->
         let arg m (_, eo) = option expression m eo in
         let m' = if List.exists is_abstracted_arg args
@@ -430,20 +440,15 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
         Env.join (list arg m' args) (expression m' e)
     | Texp_tuple exprs ->
       list expression (compos mode Guarded) exprs
+(* TODO: get rid of `when`, join the 3 following patterns in just one. *)
     | Texp_array exprs when array_kind exp = `Pfloatarray ->
-      failwith "TODO float array"
-(*
-      Use.inspect (list expression env exprs)
-*)
+      list expression (compos mode Dereferenced) exprs
     | Texp_array exprs when has_concrete_element_type exp ->
       list expression (compos mode Guarded) exprs
     | Texp_array exprs ->
-      failwith "TODO array"
-      (*
       (* This is counted as a use, because constructing a generic array
           involves inspecting the elements (PR#6939). *)
-      Use.inspect (list expression env exprs)
-*)
+      list expression (compos mode Dereferenced) exprs
     | Texp_construct (_, desc, exprs) ->
       let access_constructor =
         match desc.cstr_tag with
@@ -527,11 +532,17 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
       let env_1 = expression (compos mode Dereferenced) e1 in
       let env_2 = expression (compos mode Guarded) e2 in
       Env.join env_1 env_2
-    | Texp_send (e1, _, eo) -> failwith "TODO send"
-    (*
-      Use.(join (inspect (expression env e1))
-              (inspect (option expression env eo)))
-*)
+    | Texp_send (e1, _, eo) ->
+      (*
+        G |- e: m[Dereferenced]
+        -----------------------
+        G |- e#x: m
+
+        Note (Alban): don't really understand what eo mean, especially when eo
+        is not None, so I can't write the full inference rule.
+      *)
+      Env.join (expression (compos mode Dereferenced) e1)
+               (option expression (compos mode Dereferenced) eo)
     | Texp_field (e, _, _) ->
       (*
         G |- e: m[Dereferenced]
@@ -868,10 +879,15 @@ and is_destructuring_pattern : Typedtree.pattern -> bool =
         is_destructuring_pattern l || is_destructuring_pattern r
     | Tpat_lazy _ -> true
 
-let is_valid_recursive_expression (*idlist*) _ expr =
+let is_valid_recursive_expression idlist expr =
   let ty = expression Unguarded expr in
-  match Env.unguarded ty, Env.dependent ty, classify_expression expr with
-  | _ :: _, _, _ (* The expression inspects rec-bound variables *)
+  match Env.unguarded ty idlist, Env.dependent ty idlist,
+        classify_expression expr with
+  | (_ :: _) as unguarded, _, _ ->
+      Printf.fprintf stderr
+      "ERROR: some rec-bound variables are unguarded: %s\n"
+      (String.concat ", " (List.map Ident.name unguarded));
+      false
   | _, _ :: _, Dynamic -> (* The expression depends on rec-bound variables
                               and its size is unknown *)
       false
@@ -880,21 +896,48 @@ let is_valid_recursive_expression (*idlist*) _ expr =
                           but does not depend on rec-bound variables *)
       true
 
-let is_valid_class_expr idlist ce = true
-  (* let rec class_expr : Env.env -> Typedtree.class_expr -> Use.t =
-    fun env ce -> match ce.cl_desc with
-      | Tcl_ident (_, _, _) -> Use.empty
-      | Tcl_structure _ -> Use.empty
-      | Tcl_fun (_, _, _, _, _) -> Use.empty
-      | Tcl_apply (_, _) -> Use.empty
+let is_valid_class_expr idlist ce =
+  let rec class_expr : mode -> Typedtree.class_expr -> Env.t =
+    fun mode ce -> match ce.cl_desc with
+      | Tcl_ident (_, _, _) ->
+        (*
+          ----------
+          [] |- a: m
+        *)
+        Env.empty
+      | Tcl_structure _ ->
+        (*
+          -----------------------
+          [] |- struct ... end: m
+        *)
+        Env.empty
+      | Tcl_fun (_, _, _, _, _) -> Env.empty
+        (*
+          ---------------------------
+          [] |- fun x1 ... xn -> C: m
+        *)
+      | Tcl_apply (_, _) -> Env.empty
       | Tcl_let (rec_flag, valbinds, _, ce) ->
-          let _, ty = value_bindings rec_flag env valbinds in
-          Use.join ty (class_expr env ce)
+        (*
+          G1, {x: _, x in V} |- e1: m[Guarded]
+          ...
+          Gn, {x: _, x in V} |- en: m[Guarded]
+          G |- C: m
+          ---
+          G1 + ... Gn + G |- let (rec)? p1 = e1 and ... pn = en in C: m
+        *)
+        let vars = List.fold_left (fun v b -> (pat_bound_idents b.vb_pat) @ v)
+                                  []
+                                  valbinds
+        in
+        let env0 = list (value_binding Env.empty vars) mode valbinds in
+        let env1 = class_expr mode ce in
+        Env.join env0 env1
       | Tcl_constraint (ce, _, _, _, _) ->
-          class_expr env ce
+          class_expr mode ce
       | Tcl_open (_, _, _, _, ce) ->
-          class_expr env ce
+          class_expr mode ce
   in
-  match Use.unguarded (class_expr (build_unguarded_env idlist) ce) with
+  match Env.unguarded (class_expr Unguarded ce) idlist with
   | [] -> true
-  | _ :: _ -> false *)
+  | _ :: _ -> false
