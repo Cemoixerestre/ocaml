@@ -460,9 +460,8 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
         | _ -> Env.empty
       in
       let m' = match desc.cstr_tag with
-        | Cstr_unboxed -> failwith "TODO constructor unboxed"
-          (* Original code: (fun x -> x)
-             I guess it should be replaced by `mode`. *)
+        | Cstr_unboxed ->
+          compos mode Unguarded
         | Cstr_constant _ | Cstr_block _ | Cstr_extension _ ->
           compos mode Guarded
       in
@@ -625,10 +624,12 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
         end
       in
       expression m' e
-    | Texp_unreachable -> failwith "TODO unreachable"
-    (*
-      Use.empty
+    | Texp_unreachable ->
+      (*
+        ----------
+        [] |- .: m
       *)
+      Env.empty
     | Texp_extension_constructor _ -> failwith "TODO extension_constructor"
     (*
       Use.empty
