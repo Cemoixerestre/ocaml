@@ -562,10 +562,13 @@ let rec expression : mode -> Typedtree.expression -> Env.t =
         G |- e.x: m
       *)
       expression (compos mode Dereferenced) e
-    | Texp_setinstvar (_,_,_,e) -> failwith "TODO setinstvar"
-    (*
-        Use.(inspect (expression env e))
-*)
+    | Texp_setinstvar (_,_,_,e) ->
+      (*
+        G |- e: m[Dereferenced]
+        -----------------------
+        G |- x <- e: m
+      *)
+      expression (compos mode Dereferenced) e
     | Texp_letexception (_, e) ->
       (* G |- e: m
          ----------------------------
@@ -671,16 +674,16 @@ and class_structure : mode -> Typedtree.class_structure -> Env.t =
 and class_field : mode -> Typedtree.class_field -> Env.t =
   fun m cf -> match cf.cf_desc with
     | Tcf_inherit (_, ce, _super, _inh_vars, _inh_meths) ->
-        failwith "TODO Tcf_inherit"
-        (* Use.inspect (class_expr env ce) *)
-    | Tcf_val (_lab, _mut, _, cfk, _) -> failwith "TODO Tcf_val"
-        (* class_field_kind env cfk *)
+      failwith "TODO Tcf_inherit"
+      (* expression (compos m Dereferenced) ce *)
+    | Tcf_val (_lab, _mut, _, cfk, _) ->
+      class_field_kind m cfk
     | Tcf_method (_, _, cfk) ->
-        class_field_kind m cfk
+      class_field_kind m cfk
     | Tcf_constraint _ -> failwith "Tcf_constraint"
         (* Use.empty *)
-    | Tcf_initializer e -> failwith "Tcf initializer"
-        (* Use.inspect (expression env e) *)
+    | Tcf_initializer e ->
+      expression (compos m Dereferenced) e
     | Tcf_attribute _ -> failwith "Tcf_attribute"
         (* Use.empty *)
 and class_field_kind : mode -> Typedtree.class_field_kind -> Env.t =
